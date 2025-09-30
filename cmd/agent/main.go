@@ -29,7 +29,17 @@ const (
 )
 
 func main() {
-	config := parseAgentFlags()
+	if err := run(); err != nil {
+		log.Printf("Application error: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	config, err := parseAgentFlags()
+	if err != nil {
+		return fmt.Errorf("parsing flags: %w", err)
+	}
 
 	log.Printf("Starting metrics agent with config:")
 	log.Printf("  Server address: %s", config.ServerAddress)
@@ -48,12 +58,8 @@ func main() {
 	sender := agent.NewSender(serverURL)
 
 	// Контекст для graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Обработка сигналов завершения
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	var wg sync.WaitGroup
 
@@ -117,11 +123,11 @@ func main() {
 
 	// Ожидание сигнала завершения
 	log.Println("Agent is running. Press Ctrl+C to stop.")
-	<-sigChan
+	<-ctx.Done()
 	log.Println("Received shutdown signal...")
 
 	// Graceful shutdown
-	cancel()
+	stop() // Останавливаем получение новых сигналов
 
 	// Ждем завершения всех горутин с таймаутом
 	done := make(chan struct{})
@@ -136,10 +142,12 @@ func main() {
 	case <-time.After(5 * time.Second):
 		log.Println("Shutdown timeout, forcing exit")
 	}
+
+	return nil
 }
 
 // parseAgentFlags парсит флаги командной строки для агента
-func parseAgentFlags() *AgentConfig {
+func parseAgentFlags() (*AgentConfig, error) {
 	config := &AgentConfig{}
 
 	var reportInterval, pollInterval int
@@ -174,7 +182,7 @@ func parseAgentFlags() *AgentConfig {
 	config.ReportInterval = time.Duration(reportInterval) * time.Second
 	config.PollInterval = time.Duration(pollInterval) * time.Second
 
-	return config
+	return config, nil
 }
 
 // contains проверяет, содержит ли строка подстроку
