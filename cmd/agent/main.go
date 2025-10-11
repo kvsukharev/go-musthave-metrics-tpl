@@ -4,28 +4,37 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/agent"
 )
 
-// Конфигурация агента
-type AgentConfig struct {
-	ServerAddress  string
-	PollInterval   time.Duration
-	ReportInterval time.Duration
+// RootConfig – верхний уровень с вложенным agent_config
+type RootConfig struct {
+	AgentConfig AgentConfig `yaml:"agent_config"`
 }
 
-// Константы по умолчанию согласно требованиям
+// AgentConfig с тегами yaml и env
+type AgentConfig struct {
+	ServerAddress  string        `yaml:"server_adress" env:"ADDRESS"` // Обращаем внимание: env тег использует точное имя переменной
+	PollInterval   time.Duration `yaml:"poll_interval"`               // интервал в time.Duration, парсим отдельно
+	ReportInterval time.Duration `yaml:"report_interval"`             // как выше
+}
+
 const (
-	defaultPollInterval   = 2 * time.Second  // Обновление метрик каждые 2 секунды
-	defaultReportInterval = 10 * time.Second // Отправка метрик каждые 10 секунд
+	defaultPollInterval   = 2 * time.Second
+	defaultReportInterval = 10 * time.Second
 	defaultServerAddress  = "localhost:8080"
+	configPath            = "internal/config/agent.yaml"
 )
 
 func main() {
@@ -36,40 +45,43 @@ func main() {
 }
 
 func run() error {
-	config, err := parseAgentFlags()
+	cfg, err := loadConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("parsing flags: %w", err)
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if err := applyEnv(cfg); err != nil {
+		return fmt.Errorf("apply env: %w", err)
+	}
+
+	if err := parseFlags(cfg); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
 	}
 
 	log.Printf("Starting metrics agent with config:")
-	log.Printf("  Server address: %s", config.ServerAddress)
-	log.Printf("  Poll interval: %v", config.PollInterval)
-	log.Printf("  Report interval: %v", config.ReportInterval)
+	log.Printf("  Server address: %s", cfg.ServerAddress)
+	log.Printf("  Poll interval: %v", cfg.PollInterval)
+	log.Printf("  Report interval: %v", cfg.ReportInterval)
 
-	// Создаем компоненты
 	collector := agent.NewCollector()
 
-	// Формируем полный URL для сервера
-	serverURL := config.ServerAddress
-	if !contains(serverURL, "http://") && !contains(serverURL, "https://") {
+	serverURL := cfg.ServerAddress
+	if len(serverURL) < 7 || (serverURL[:7] != "http://" && serverURL[:8] != "https://") {
 		serverURL = "http://" + serverURL
 	}
 
 	sender := agent.NewSender(serverURL)
 
-	// Контекст для graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	var wg sync.WaitGroup
 
-	// Горутина для сбора метрик с настраиваемым интервалом
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		log.Printf("Started metrics collection with interval: %v", config.PollInterval)
-
-		ticker := time.NewTicker(config.PollInterval)
+		log.Printf("Started metrics collection with interval: %v", cfg.PollInterval)
+		ticker := time.NewTicker(cfg.PollInterval)
 		defer ticker.Stop()
 
 		for {
@@ -79,20 +91,17 @@ func run() error {
 				return
 			case <-ticker.C:
 				collector.UpdateMetrics()
-				gaugeCount, counterCount := collector.GetMetricsCount()
-				log.Printf("Collected metrics: %d gauges, %d counters",
-					gaugeCount, counterCount)
+				gCount, cCount := collector.GetMetricsCount()
+				log.Printf("Collected metrics: %d gauges, %d counters", gCount, cCount)
 			}
 		}
 	}()
 
-	// Горутина для отправки метрик с настраиваемым интервалом
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		log.Printf("Started metrics reporting with interval: %v", config.ReportInterval)
-
-		ticker := time.NewTicker(config.ReportInterval)
+		log.Printf("Started metrics reporting with interval: %v", cfg.ReportInterval)
+		ticker := time.NewTicker(cfg.ReportInterval)
 		defer ticker.Stop()
 
 		for {
@@ -101,16 +110,12 @@ func run() error {
 				log.Println("Stopping metrics reporting...")
 				return
 			case <-ticker.C:
-				// Получаем все метрики
 				gauges := collector.GetGauges()
 				counters := collector.GetCounters()
-
 				if len(gauges) == 0 && len(counters) == 0 {
 					log.Println("No metrics to send")
 					continue
 				}
-
-				// Отправляем все метрики
 				log.Printf("Sending metrics to %s", serverURL)
 				if err := sender.SendAllMetrics(gauges, counters); err != nil {
 					log.Printf("Failed to send metrics: %v", err)
@@ -121,15 +126,13 @@ func run() error {
 		}
 	}()
 
-	// Ожидание сигнала завершения
 	log.Println("Agent is running. Press Ctrl+C to stop.")
+
 	<-ctx.Done()
 	log.Println("Received shutdown signal...")
 
-	// Graceful shutdown
-	stop() // Останавливаем получение новых сигналов
+	stop()
 
-	// Ждем завершения всех горутин с таймаутом
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -146,59 +149,81 @@ func run() error {
 	return nil
 }
 
-// parseAgentFlags парсит флаги командной строки для агента
-func parseAgentFlags() (*AgentConfig, error) {
-	config := &AgentConfig{}
-
-	var reportInterval, pollInterval int
-
-	flag.StringVar(&config.ServerAddress, "a", defaultServerAddress, "HTTP server endpoint address")
-	flag.IntVar(&reportInterval, "r", int(defaultReportInterval.Seconds()), "Report interval in seconds")
-	flag.IntVar(&pollInterval, "p", int(defaultPollInterval.Seconds()), "Poll interval in seconds")
-
-	// Парсим флаги
-	flag.Parse()
-
-	// Проверяем на неизвестные флаги
-	if flag.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unknown arguments: %v\n", flag.Args())
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
-		flag.PrintDefaults()
-		os.Exit(1)
+// loadConfig читает YAML, задаёт дефолты, парсит в структуру
+func loadConfig(path string) (*AgentConfig, error) {
+	rootCfg := &RootConfig{
+		AgentConfig: AgentConfig{
+			ServerAddress:  defaultServerAddress,
+			PollInterval:   defaultPollInterval,
+			ReportInterval: defaultReportInterval,
+		},
 	}
 
-	// Валидация значений
-	if reportInterval <= 0 {
-		fmt.Fprintf(os.Stderr, "Error: report interval must be positive, got %d\n", reportInterval)
-		os.Exit(1)
-	}
-
-	if pollInterval <= 0 {
-		fmt.Fprintf(os.Stderr, "Error: poll interval must be positive, got %d\n", pollInterval)
-		os.Exit(1)
-	}
-
-	// Конвертируем в time.Duration
-	config.ReportInterval = time.Duration(reportInterval) * time.Second
-	config.PollInterval = time.Duration(pollInterval) * time.Second
-
-	return config, nil
-}
-
-// contains проверяет, содержит ли строка подстроку
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) &&
-		(s[:len(substr)] == substr ||
-			(len(s) > len(substr) && s[len(s)-len(substr):] == substr) ||
-			indexOf(s, substr) != -1)
-}
-
-// indexOf находит индекс подстроки в строке
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		log.Printf("Config file %q not found, using defaults and env variables", path)
+	} else {
+		if err := yaml.Unmarshal(data, rootCfg); err != nil {
+			return nil, fmt.Errorf("unmarshal yaml: %w", err)
 		}
 	}
-	return -1
+
+	return &rootCfg.AgentConfig, nil
+}
+
+// applyEnv проверяет переменные окружения и если они есть — перекрывает параметры
+func applyEnv(cfg *AgentConfig) error {
+	// Переменная окружения ADDRESS
+	if addr := os.Getenv("ADDRESS"); addr != "" {
+		cfg.ServerAddress = addr
+	}
+
+	// Переменные интервалов интервалов в секундах — парсим из строк
+	if pollStr := os.Getenv("POLL_INTERVAL"); pollStr != "" {
+		sec, err := strconv.Atoi(pollStr)
+		if err != nil {
+			return fmt.Errorf("invalid POLL_INTERVAL: %w", err)
+		}
+		cfg.PollInterval = time.Duration(sec) * time.Second
+	}
+
+	if reportStr := os.Getenv("REPORT_INTERVAL"); reportStr != "" {
+		sec, err := strconv.Atoi(reportStr)
+		if err != nil {
+			return fmt.Errorf("invalid REPORT_INTERVAL: %w", err)
+		}
+		cfg.ReportInterval = time.Duration(sec) * time.Second
+	}
+
+	return nil
+}
+
+// parseFlags применяет параметры из флагов, только если соответствующая ENV не задана (приоритет env выше)
+func parseFlags(cfg *AgentConfig) error {
+	var (
+		flagAddress        string
+		flagPollInterval   int
+		flagReportInterval int
+	)
+
+	flag.StringVar(&flagAddress, "a", "", "HTTP server endpoint address")
+	flag.IntVar(&flagPollInterval, "p", 0, "Poll interval in seconds")
+	flag.IntVar(&flagReportInterval, "r", 0, "Report interval in seconds")
+
+	flag.Parse()
+
+	// Применяем флаги, если переменные окружения не заданы
+	if os.Getenv("ADDRESS") == "" && flagAddress != "" {
+		cfg.ServerAddress = flagAddress
+	}
+
+	if os.Getenv("POLL_INTERVAL") == "" && flagPollInterval > 0 {
+		cfg.PollInterval = time.Duration(flagPollInterval) * time.Second
+	}
+
+	if os.Getenv("REPORT_INTERVAL") == "" && flagReportInterval > 0 {
+		cfg.ReportInterval = time.Duration(flagReportInterval) * time.Second
+	}
+
+	return nil
 }

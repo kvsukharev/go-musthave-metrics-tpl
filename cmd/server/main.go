@@ -10,14 +10,23 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/caarlos0/env/v6"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
 type ServerConfig struct {
-	Address string
+	Address string `env:"ADDRESS"`
 }
+
+const (
+	defaultPollInterval   = 2 * time.Second
+	defaultReportInterval = 10 * time.Second
+	defaultServerAddress  = "localhost:8080"
+	configPath            = "internal/config/agent.yaml"
+)
 
 type MetricsStorage struct {
 	gauges   map[string]float64
@@ -42,6 +51,27 @@ func NewServer(storage *MetricsStorage, config *ServerConfig) *Server {
 		storage: storage,
 		config:  config,
 	}
+}
+
+func loadServerConfig() (*ServerConfig, error) {
+	cfg := &ServerConfig{
+		Address: defaultServerAddress,
+	}
+
+	// env.Parse подтянет ADDRESS если есть
+	if err := env.Parse(cfg); err != nil {
+		return nil, err
+	}
+
+	var flagAddress string
+	flag.StringVar(&flagAddress, "a", "", "HTTP server address")
+	flag.Parse()
+
+	if os.Getenv("ADDRESS") == "" && flagAddress != "" {
+		cfg.Address = flagAddress
+	}
+
+	return cfg, nil
 }
 
 func (s *Server) Router() http.Handler {
