@@ -34,6 +34,8 @@ func Init() {
 
 		zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 		log.Logger = zerolog.New(multi).With().Timestamp().Logger()
+
+		log.Logger.Info().Msg("Logger initialized and writing to logs/app.log")
 	})
 }
 
