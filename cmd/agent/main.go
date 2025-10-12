@@ -16,6 +16,9 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/agent"
+	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/logger"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // RootConfig – верхний уровень с вложенным agent_config
@@ -45,6 +48,8 @@ func main() {
 }
 
 func run() error {
+	log := logger.GetLogger()
+
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -58,10 +63,11 @@ func run() error {
 		return fmt.Errorf("parse flags: %w", err)
 	}
 
-	log.Printf("Starting metrics agent with config:")
-	log.Printf("  Server address: %s", cfg.ServerAddress)
-	log.Printf("  Poll interval: %v", cfg.PollInterval)
-	log.Printf("  Report interval: %v", cfg.ReportInterval)
+	log.Info().
+		Str("Starting metrics agent with config:", "").
+		Str("  Server address: %s", cfg.ServerAddress).
+		Dur("  Poll interval: %v", cfg.PollInterval).
+		Dur("  Report interval: %v", cfg.ReportInterval)
 
 	collector := agent.NewCollector()
 
@@ -72,6 +78,10 @@ func run() error {
 
 	sender := agent.NewSender(serverURL)
 
+	// Router и middleware с логированием
+	r := chi.NewRouter()
+	r.Use(logger.Middleware)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -80,7 +90,7 @@ func run() error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		log.Printf("Started metrics collection with interval: %v", cfg.PollInterval)
+		log.Info().Dur("Started metrics collection with interval: %v", cfg.PollInterval)
 		ticker := time.NewTicker(cfg.PollInterval)
 		defer ticker.Stop()
 
@@ -92,7 +102,7 @@ func run() error {
 			case <-ticker.C:
 				collector.UpdateMetrics()
 				gCount, cCount := collector.GetMetricsCount()
-				log.Printf("Collected metrics: %d gauges, %d counters", gCount, cCount)
+				log.Info().Msgf("Collected metrics: %d gauges, %d counters", gCount, cCount)
 			}
 		}
 	}()
@@ -100,36 +110,36 @@ func run() error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		log.Printf("Started metrics reporting with interval: %v", cfg.ReportInterval)
+		log.Info().Msgf("Started metrics reporting with interval: %v", cfg.ReportInterval)
 		ticker := time.NewTicker(cfg.ReportInterval)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
-				log.Println("Stopping metrics reporting...")
+				log.Info().Msg("Stopping metrics reporting...")
 				return
 			case <-ticker.C:
 				gauges := collector.GetGauges()
 				counters := collector.GetCounters()
 				if len(gauges) == 0 && len(counters) == 0 {
-					log.Println("No metrics to send")
+					log.Info().Msg("No metrics to send")
 					continue
 				}
-				log.Printf("Sending metrics to %s", serverURL)
+				log.Info().Str("Sending metrics to %s", serverURL)
 				if err := sender.SendAllMetrics(gauges, counters); err != nil {
-					log.Printf("Failed to send metrics: %v", err)
+					log.Info().Msgf("Failed to send metrics: %v", err)
 				} else {
-					log.Printf("Successfully sent all metrics")
+					log.Info().Msg("Successfully sent all metrics")
 				}
 			}
 		}
 	}()
 
-	log.Println("Agent is running. Press Ctrl+C to stop.")
+	log.Info().Msg("Agent is running. Press Ctrl+C to stop.")
 
 	<-ctx.Done()
-	log.Println("Received shutdown signal...")
+	log.Info().Msg("Received shutdown signal...")
 
 	stop()
 
@@ -141,9 +151,9 @@ func run() error {
 
 	select {
 	case <-done:
-		log.Println("Agent stopped gracefully")
+		log.Info().Msg("Agent stopped gracefully")
 	case <-time.After(5 * time.Second):
-		log.Println("Shutdown timeout, forcing exit")
+		log.Info().Msg("Shutdown timeout, forcing exit")
 	}
 
 	return nil
