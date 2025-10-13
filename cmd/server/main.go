@@ -17,6 +17,7 @@ import (
 	"github.com/caarlos0/env/v6"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/middleware_proj"
 )
 
 type ServerConfig struct {
@@ -190,7 +191,10 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
+	r.Use(middleware_proj.GzipMiddleware)
 
+	r.Post("/update", s.updateMetricJSONHandler)
+	r.Post("/value", s.valueMetricJSONHandler)
 	r.Post("/update/*", s.updateHandler)
 	r.Post("/update/{type}/{name}/{value}", s.updateHandlerChi)
 	r.Get("/value/{type}/{name}", s.valueHandler)
