@@ -21,8 +21,17 @@ import (
 )
 
 type ServerConfig struct {
-	Address string `env:"ADDRESS"`
+	Address       string `env:"ADDRESS"`
+	StoreInterval time.Duration
+	FileStorage   string
+	Restore       bool
 }
+
+const (
+	defaultStoreInterval = 300 * time.Second
+	defaultFileStorage   = "metrics.json"
+	defaultRestore       = false
+)
 
 const (
 	defaultPollInterval   = 2 * time.Second
