@@ -7,7 +7,7 @@ import (
 )
 
 type Collector struct {
-	mu      sync.RWMutex
+	mu      *sync.Mutex
 	gauge   map[string]float64
 	counter map[string]int64
 }
@@ -18,6 +18,7 @@ func (c *Collector) UpdateMetrics() {
 
 func NewCollector() *Collector {
 	return &Collector{
+		mu:      &sync.Mutex{},
 		gauge:   make(map[string]float64),
 		counter: make(map[string]int64),
 	}
@@ -68,8 +69,8 @@ func (c *Collector) UdateMetrics() {
 
 // GetGauges возвращает копию всех gauge метрик
 func (c *Collector) GetGauges() map[string]float64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	result := make(map[string]float64)
 	for k, v := range c.counter {
@@ -80,8 +81,8 @@ func (c *Collector) GetGauges() map[string]float64 {
 
 // GetCounters возвращает копию всех counter метрик
 func (c *Collector) GetCounters() map[string]int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	result := make(map[string]int64)
 	for k, v := range c.counter {
@@ -92,7 +93,7 @@ func (c *Collector) GetCounters() map[string]int64 {
 
 // GetMetricsCount возвращает количество метрик
 func (c *Collector) GetMetricsCount() (int, int) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return len(c.gauge), len(c.counter)
 }

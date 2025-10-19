@@ -1,76 +1,221 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/caarlos0/env/v6"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/middleware_proj"
 )
 
-// Конфигурация сервера
 type ServerConfig struct {
-	Address string
+	Address       string `env:"ADDRESS"`
+	StoreInterval time.Duration
+	FileStorage   string
+	Restore       bool
 }
 
-// Хранилище метрик в памяти с мьютексом для безопасности
-var (
-	gauges   = make(map[string]float64)
-	counters = make(map[string]int64)
-	mu       sync.RWMutex
+const (
+	defaultStoreInterval = 300 * time.Second
+	defaultFileStorage   = "metrics.json"
+	defaultRestore       = false
 )
 
-func main() {
-	config := parseServerFlags()
+const (
+	defaultPollInterval   = 2 * time.Second
+	defaultReportInterval = 10 * time.Second
+	defaultServerAddress  = "localhost:8080"
+	configPath            = "internal/config/agent.yaml"
+)
 
-	// Создаем роутер chi
+type Metrics struct {
+	ID    string   `json:"id"`              // имя метрики
+	MType string   `json:"type"`            // параметр, принимающий значение gauge или counter
+	Delta *int64   `json:"delta,omitempty"` // значение метрики в случае передачи counter
+	Value *float64 `json:"value,omitempty"` // значение метрики в случае передачи gauge
+}
+
+type MetricsStorage struct {
+	gauges   map[string]float64
+	counters map[string]int64
+	mu       sync.RWMutex
+}
+
+func NewMetricsStorage() *MetricsStorage {
+	return &MetricsStorage{
+		gauges:   make(map[string]float64),
+		counters: make(map[string]int64),
+	}
+}
+
+type Server struct {
+	storage *MetricsStorage
+	config  *ServerConfig
+}
+
+func NewServer(storage *MetricsStorage, config *ServerConfig) *Server {
+	return &Server{
+		storage: storage,
+		config:  config,
+	}
+}
+
+func loadServerConfig() (*ServerConfig, error) {
+	cfg := &ServerConfig{
+		Address: defaultServerAddress,
+	}
+
+	// env.Parse подтянет ADDRESS если есть
+	if err := env.Parse(cfg); err != nil {
+		return nil, err
+	}
+
+	var flagAddress string
+	flag.StringVar(&flagAddress, "a", "", "HTTP server address")
+	flag.Parse()
+
+	if os.Getenv("ADDRESS") == "" && flagAddress != "" {
+		cfg.Address = flagAddress
+	}
+
+	return cfg, nil
+}
+
+func (s *Server) updateMetricJSONHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
+		return
+	}
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusInternalServerError)
+		return
+	}
+	defer r.Body.Close()
+
+	var m Metrics
+	if err := json.Unmarshal(body, &m); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if m.ID == "" || (m.MType != "gauge" && m.MType != "counter") {
+		http.Error(w, "invalid metric id or type", http.StatusBadRequest)
+		return
+	}
+
+	s.storage.mu.Lock()
+	defer s.storage.mu.Unlock()
+
+	switch m.MType {
+	case "gauge":
+		if m.Value == nil {
+			http.Error(w, "missing value for gauge", http.StatusBadRequest)
+			return
+		}
+		s.storage.gauges[m.ID] = *m.Value
+	case "counter":
+		if m.Delta == nil {
+			http.Error(w, "missing delta for counter", http.StatusBadRequest)
+			return
+		}
+		s.storage.counters[m.ID] += *m.Delta
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) valueMetricJSONHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
+		return
+	}
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusInternalServerError)
+		return
+	}
+	defer r.Body.Close()
+
+	var req Metrics
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	if req.ID == "" || (req.MType != "gauge" && req.MType != "counter") {
+		http.Error(w, "invalid metric id or type", http.StatusBadRequest)
+		return
+	}
+
+	s.storage.mu.RLock()
+	defer s.storage.mu.RUnlock()
+
+	resp := Metrics{ID: req.ID, MType: req.MType}
+
+	switch req.MType {
+	case "gauge":
+		val, ok := s.storage.gauges[req.ID]
+		if !ok {
+			http.Error(w, "metric not found", http.StatusNotFound)
+			return
+		}
+		resp.Value = &val
+	case "counter":
+		val, ok := s.storage.counters[req.ID]
+		if !ok {
+			http.Error(w, "metric not found", http.StatusNotFound)
+			return
+		}
+		resp.Delta = &val
+	}
+
+	jsonResp, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "failed to marshal response", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonResp)
+}
+
+func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 
-	// Добавляем middleware
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
+	r.Use(middleware_proj.GzipMiddleware)
 
-	// Регистрируем обработчики
-	r.Post("/update/*", updateHandler)                        // Старый способ через path parsing
-	r.Post("/update/{type}/{name}/{value}", updateHandlerChi) // Новый способ через chi params
-	r.Get("/value/{type}/{name}", valueHandler)               // Новый endpoint для получения метрик
-	r.Get("/", rootHandler)
+	r.Post("/update", s.updateMetricJSONHandler)
+	r.Post("/value", s.valueMetricJSONHandler)
+	r.Post("/update/*", s.updateHandler)
+	r.Post("/update/{type}/{name}/{value}", s.updateHandlerChi)
+	r.Get("/value/{type}/{name}", s.valueHandler)
+	r.Get("/", s.rootHandler)
 
-	log.Printf("Starting metrics server on %s", config.Address)
-	log.Fatal(http.ListenAndServe(config.Address, r))
+	r.Post("/update", s.updateMetricJSONHandler)
+	r.Post("/value", s.valueMetricJSONHandler)
+
+	return r
 }
 
-// parseServerFlags парсит флаги командной строки для сервера
-func parseServerFlags() *ServerConfig {
-	config := &ServerConfig{}
-
-	flag.StringVar(&config.Address, "a", "localhost:8080", "HTTP server endpoint address")
-
-	// Парсим флаги
-	flag.Parse()
-
-	// Проверяем на неизвестные флаги
-	if flag.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unknown arguments: %v\n", flag.Args())
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
-
-	return config
-}
-
-// updateHandler - ваш оригинальный обработчик (сохранен для совместимости)
-func updateHandler(w http.ResponseWriter, r *http.Request) {
-	// Парсим URL: /update/{type}/{name}/{value}
+func (s *Server) updateHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/update/")
 	parts := strings.Split(path, "/")
 
@@ -80,26 +225,20 @@ func updateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	metricType := parts[0]
-	metricName := parts[1]
-	metricValue := parts[2]
-
-	updateMetric(w, metricType, metricName, metricValue)
+	s.updateMetric(w, parts[0], parts[1], parts[2])
 }
 
-// updateHandlerChi - новый обработчик с использованием chi URL параметров
-func updateHandlerChi(w http.ResponseWriter, r *http.Request) {
+func (s *Server) updateHandlerChi(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
 	metricValue := chi.URLParam(r, "value")
 
-	updateMetric(w, metricType, metricName, metricValue)
+	s.updateMetric(w, metricType, metricName, metricValue)
 }
 
-// updateMetric - общая логика обновления метрик
-func updateMetric(w http.ResponseWriter, metricType, metricName, metricValue string) {
-	mu.Lock()
-	defer mu.Unlock()
+func (s *Server) updateMetric(w http.ResponseWriter, metricType, metricName, metricValue string) {
+	s.storage.mu.Lock()
+	defer s.storage.mu.Unlock()
 
 	switch metricType {
 	case "gauge":
@@ -108,7 +247,7 @@ func updateMetric(w http.ResponseWriter, metricType, metricName, metricValue str
 			http.Error(w, "Invalid gauge value", http.StatusBadRequest)
 			return
 		}
-		gauges[metricName] = value
+		s.storage.gauges[metricName] = value
 		log.Printf("Updated gauge %s = %.6f", metricName, value)
 
 	case "counter":
@@ -117,8 +256,8 @@ func updateMetric(w http.ResponseWriter, metricType, metricName, metricValue str
 			http.Error(w, "Invalid counter value", http.StatusBadRequest)
 			return
 		}
-		counters[metricName] += value // Counters накапливаются
-		log.Printf("Updated counter %s = %d (added %d)", metricName, counters[metricName], value)
+		s.storage.counters[metricName] += value
+		log.Printf("Updated counter %s = %d (added %d)", metricName, s.storage.counters[metricName], value)
 
 	default:
 		http.Error(w, "Unknown metric type. Use 'gauge' or 'counter'",
@@ -126,7 +265,6 @@ func updateMetric(w http.ResponseWriter, metricType, metricName, metricValue str
 		return
 	}
 
-	// Отправляем ответ
 	responseText := "OK\n"
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(len(responseText)))
@@ -134,19 +272,18 @@ func updateMetric(w http.ResponseWriter, metricType, metricName, metricValue str
 	fmt.Fprint(w, responseText)
 }
 
-// valueHandler - НОВЫЙ обработчик для получения значения метрики
-func valueHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) valueHandler(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
 
-	mu.RLock()
-	defer mu.RUnlock()
+	s.storage.mu.RLock()
+	defer s.storage.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	switch metricType {
 	case "gauge":
-		value, exists := gauges[metricName]
+		value, exists := s.storage.gauges[metricName]
 		if !exists {
 			http.Error(w, "Metric not found", http.StatusNotFound)
 			return
@@ -155,7 +292,7 @@ func valueHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "%g", value)
 
 	case "counter":
-		value, exists := counters[metricName]
+		value, exists := s.storage.counters[metricName]
 		if !exists {
 			http.Error(w, "Metric not found", http.StatusNotFound)
 			return
@@ -168,21 +305,20 @@ func valueHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// rootHandler - обновленный обработчик главной страницы с улучшенным HTML
-func rootHandler(w http.ResponseWriter, r *http.Request) {
-	mu.RLock()
-	defer mu.RUnlock()
-
+func (s *Server) rootHandler(w http.ResponseWriter, r *http.Request) {
 	// Создаем копии для безопасной работы с шаблоном
 	gaugesCopy := make(map[string]float64)
 	countersCopy := make(map[string]int64)
 
-	for k, v := range gauges {
+	// Блокируем только на время копирования
+	s.storage.mu.RLock()
+	for k, v := range s.storage.gauges {
 		gaugesCopy[k] = v
 	}
-	for k, v := range counters {
+	for k, v := range s.storage.counters {
 		countersCopy[k] = v
 	}
+	s.storage.mu.RUnlock()
 
 	tmpl := `<!DOCTYPE html>
 <html>
@@ -289,4 +425,45 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	if err := t.Execute(w, data); err != nil {
 		log.Printf("Template execution error: %v", err)
 	}
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Printf("Server error: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	config, err := parseServerFlags()
+	if err != nil {
+		return fmt.Errorf("parsing flags: %w", err)
+	}
+
+	// Создаем зависимости
+	storage := NewMetricsStorage()
+	server := NewServer(storage, config)
+
+	log.Printf("Starting metrics server on %s", config.Address)
+	if err := http.ListenAndServe(config.Address, server.Router()); err != nil {
+		return fmt.Errorf("server failed to start: %w", err)
+	}
+
+	return nil
+}
+
+func parseServerFlags() (*ServerConfig, error) {
+	config := &ServerConfig{}
+
+	flag.StringVar(&config.Address, "a", "localhost:8080", "HTTP server endpoint address")
+	flag.Parse()
+
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "Error: unknown arguments: %v\n", flag.Args())
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
+		flag.PrintDefaults()
+		return nil, fmt.Errorf("unknown arguments provided")
+	}
+
+	return config, nil
 }

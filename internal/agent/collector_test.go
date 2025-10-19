@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"sync"
 	"testing"
-	"time"
 )
 
 func TestNewCollector(t *testing.T) {
@@ -94,62 +94,128 @@ func TestPollCountIncrement(t *testing.T) {
 func TestRandomValueChanges(t *testing.T) {
 	collector := NewCollector()
 
-	collector.UpdateMetrics()
-	gauge1 := collector.GetGauges()
-	randomValue1 := gauge1["RandomValue"]
+	// Собираем несколько значений RandomValue
+	const numSamples = 100
+	values := make([]float64, numSamples)
 
-	// Небольшая пауза для изменения seed времени
-	time.Sleep(1 * time.Millisecond)
-
-	// RandomValue должно изменяться (хотя теоретически может совпасть)
-	// Проверим несколько раз для уверенности
-	different := false
-	for i := 0; i < 10; i++ {
+	for i := 0; i < numSamples; i++ {
 		collector.UpdateMetrics()
 		gauges := collector.GetGauges()
-		if gauges["RandomValue"] != randomValue1 {
-			different = true
-			break
+		values[i] = gauges["RandomValue"]
+
+		// Проверяем диапазон
+		if values[i] < 0 || values[i] >= 1 {
+			t.Errorf("RandomValue should be in range [0, 1), got %f", values[i])
 		}
-		time.Sleep(1 * time.Millisecond)
 	}
 
-	if !different {
-		t.Error("RandomValue should change between updates")
+	// Проверяем что значения различаются
+	// Вероятность того что все 100 значений одинаковы крайне мала
+	allSame := true
+	firstValue := values[0]
+	for i := 1; i < numSamples; i++ {
+		if values[i] != firstValue {
+			allSame = false
+			break
+		}
+	}
+
+	if allSame {
+		t.Error("All RandomValue samples are identical, which is statistically very unlikely")
+	}
+
+	// Дополнительно проверим что у нас есть разнообразие значений
+	// Разделим диапазон [0,1) на 10 интервалов и проверим что заполнены хотя бы 3
+	intervals := make([]int, 10)
+	for _, value := range values {
+		interval := int(value * 10)
+		if interval == 10 {
+			interval = 9 // Граничный случай для значения 1.0
+		}
+		intervals[interval]++
+	}
+
+	filledIntervals := 0
+	for _, count := range intervals {
+		if count > 0 {
+			filledIntervals++
+		}
+	}
+
+	if filledIntervals < 3 {
+		t.Errorf("Expected at least 3 different intervals to be filled, got %d", filledIntervals)
 	}
 }
 
 func TestConcurrentAccess(t *testing.T) {
 	collector := NewCollector()
 
-	done := make(chan bool)
+	const (
+		numWriters      = 10
+		numReaders      = 10
+		numOpsPerWorker = 100
+	)
 
-	// Горутина для записи
-	go func() {
-		for i := 0; i < 100; i++ {
-			collector.UpdateMetrics()
-			time.Sleep(1 * time.Millisecond)
-		}
-		done <- true
-	}()
+	var wg sync.WaitGroup
 
-	// Горутина для чтения
-	go func() {
-		for i := 0; i < 100; i++ {
-			_ = collector.GetGauges()
-			_ = collector.GetCounters()
-			time.Sleep(1 * time.Millisecond)
-		}
-		done <- true
-	}()
+	// Запускаем несколько writer'ов
+	for i := 0; i < numWriters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numOpsPerWorker; j++ {
+				collector.UpdateMetrics()
+			}
+		}()
+	}
 
-	// Ждем завершения обеих горутин
-	<-done
-	<-done
+	// Запускаем несколько reader'ов
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numOpsPerWorker; j++ {
+				gauges := collector.GetGauges()
+				counters := collector.GetCounters()
+
+				// Проверяем базовую целостность данных только если они есть
+				// Все обращения к данным должны быть через возвращенные копии
+				if len(counters) > 0 {
+					if pollCount, exists := counters["PollCount"]; exists && pollCount < 0 {
+						t.Errorf("Invalid PollCount: %d", pollCount)
+					}
+				}
+
+				if len(gauges) > 0 {
+					if randomValue, exists := gauges["RandomValue"]; exists {
+						if randomValue < 0 || randomValue >= 1 {
+							t.Errorf("Invalid RandomValue: %f", randomValue)
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	// Ждем завершения всех операций
+	wg.Wait()
 
 	// Проверяем финальное состояние
-	counters := collector.GetCounters()
-	if counters["PollCount"] != 100 {
-		t.Errorf("Expected PollCount = 100, got %d", counters["PollCount"])
+	finalCounters := collector.GetCounters()
+	expectedPollCount := int64(numWriters * numOpsPerWorker)
+	if finalCounters["PollCount"] != expectedPollCount {
+		t.Errorf("Expected PollCount = %d, got %d", expectedPollCount, finalCounters["PollCount"])
+	}
+
+	// Проверяем что данные корректны
+	finalGauges := collector.GetGauges()
+	if len(finalGauges) == 0 {
+		t.Error("No gauge metrics found after concurrent operations")
+	}
+
+	if randomValue, exists := finalGauges["RandomValue"]; !exists {
+		t.Error("RandomValue not found")
+	} else if randomValue < 0 || randomValue >= 1 {
+		t.Errorf("Invalid RandomValue: %f", randomValue)
 	}
 }
