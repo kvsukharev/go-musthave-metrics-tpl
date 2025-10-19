@@ -28,7 +28,7 @@ type RootConfig struct {
 
 // AgentConfig с тегами yaml и env
 type AgentConfig struct {
-	ServerAddress  string        `yaml:"server_adress" env:"ADDRESS"` // Обращаем внимание: env тег использует точное имя переменной
+	server_address string        `yaml:"server_adress" env:"ADDRESS"` // Обращаем внимание: env тег использует точное имя переменной
 	PollInterval   time.Duration `yaml:"poll_interval"`               // интервал в time.Duration, парсим отдельно
 	ReportInterval time.Duration `yaml:"report_interval"`             // как выше
 }
@@ -65,13 +65,13 @@ func run() error {
 
 	log.Info().
 		Str("Starting metrics agent with config:", "").
-		Str("  Server address: %s", cfg.ServerAddress).
-		Dur("  Poll interval: %v", cfg.PollInterval).
-		Dur("  Report interval: %v", cfg.ReportInterval)
+		Str("Server address: %s", cfg.server_address).
+		Dur("Poll interval: %v", cfg.PollInterval).
+		Dur("Report interval: %v", cfg.ReportInterval)
 
 	collector := agent.NewCollector()
 
-	serverURL := cfg.ServerAddress
+	serverURL := cfg.server_address
 	if len(serverURL) < 7 || (serverURL[:7] != "http://" && serverURL[:8] != "https://") {
 		serverURL = "http://" + serverURL
 	}
@@ -163,7 +163,7 @@ func run() error {
 func loadConfig(path string) (*AgentConfig, error) {
 	rootCfg := &RootConfig{
 		AgentConfig: AgentConfig{
-			ServerAddress:  defaultServerAddress,
+			server_address: defaultServerAddress,
 			PollInterval:   defaultPollInterval,
 			ReportInterval: defaultReportInterval,
 		},
@@ -185,7 +185,7 @@ func loadConfig(path string) (*AgentConfig, error) {
 func applyEnv(cfg *AgentConfig) error {
 	// Переменная окружения ADDRESS
 	if addr := os.Getenv("ADDRESS"); addr != "" {
-		cfg.ServerAddress = addr
+		cfg.server_address = addr
 	}
 
 	// Переменные интервалов интервалов в секундах — парсим из строк
@@ -224,7 +224,7 @@ func parseFlags(cfg *AgentConfig) error {
 
 	// Применяем флаги, если переменные окружения не заданы
 	if os.Getenv("ADDRESS") == "" && flagAddress != "" {
-		cfg.ServerAddress = flagAddress
+		cfg.server_address = flagAddress
 	}
 
 	if os.Getenv("POLL_INTERVAL") == "" && flagPollInterval > 0 {
