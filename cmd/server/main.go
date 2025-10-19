@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/caarlos0/env/v6"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/middleware_proj"
@@ -70,27 +69,6 @@ func NewServer(storage *MetricsStorage, config *ServerConfig) *Server {
 		storage: storage,
 		config:  config,
 	}
-}
-
-func loadServerConfig() (*ServerConfig, error) {
-	cfg := &ServerConfig{
-		Address: defaultServerAddress,
-	}
-
-	// env.Parse подтянет ADDRESS если есть
-	if err := env.Parse(cfg); err != nil {
-		return nil, err
-	}
-
-	var flagAddress string
-	flag.StringVar(&flagAddress, "a", "", "HTTP server address")
-	flag.Parse()
-
-	if os.Getenv("ADDRESS") == "" && flagAddress != "" {
-		cfg.Address = flagAddress
-	}
-
-	return cfg, nil
 }
 
 func (s *Server) updateMetricJSONHandler(w http.ResponseWriter, r *http.Request) {
