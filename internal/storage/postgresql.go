@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -11,17 +12,26 @@ type PostgresStorage struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresStorage(ctx context.Context, dsn string) (*PostgresStorage, error) {
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create connection pool: %w", err)
-	}
-	return &PostgresStorage{pool: pool}, nil
+func (p *PostgresStorage) Close() {
+	panic("unimplemented")
 }
 
-func (p *PostgresStorage) Close() error {
-	p.pool.Close()
-	return nil
+func NewPostgresStorage(ctx context.Context, dsn string) (*PostgresStorage, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	cfg.MaxConns = 10
+	cfg.MinConns = 2
+	cfg.HealthCheckPeriod = time.Minute
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create connection pool: %w", err)
+	}
+
+	return &PostgresStorage{pool: pool}, nil
 }
 
 func (p *PostgresStorage) Ping(ctx context.Context) error {
@@ -31,10 +41,20 @@ func (p *PostgresStorage) Ping(ctx context.Context) error {
 // Пример реализации метода для счетчиков
 func (p *PostgresStorage) UpdateCounter(ctx context.Context, name string, value int64) error {
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO counters (name, value) 
+		`INSERT INTO counters (name, value)
 		VALUES ($1, $2)
-		ON CONFLICT (name) DO UPDATE 
+		ON CONFLICT (name) DO UPDATE
 		SET value = counters.value + EXCLUDED.value`,
+		name, value)
+	return err
+}
+
+func (p *PostgresStorage) UpdateGauge(ctx context.Context, name string, value float64) error {
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO gauges (name, value)
+		VALUES ($1, $2)
+		ON CONFLICT (name) DO UPDATE
+		SET value = EXCLUDED.value`,
 		name, value)
 	return err
 }

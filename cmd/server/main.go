@@ -73,8 +73,9 @@ func main() {
 	if cfg.DatabaseDSN != "" {
 		dbStore, err := storage.NewPostgresStorage(context.Background(), cfg.DatabaseDSN)
 		if err != nil {
-			log.Fatalf("Database init error: %v", err)
+			log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 		}
+		log.Println("Using PostgreSQL storage")
 		defer dbStore.Close()
 	} else {
 		store = storage.NewMemStorage()
