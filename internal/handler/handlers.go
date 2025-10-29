@@ -42,6 +42,11 @@ type MetricsStorage struct {
 	mu       sync.RWMutex
 }
 
+// BatchUpdate implements storage.Storage.
+func (m *MetricsStorage) BatchUpdate(ctx context.Context, metrics []model.Metrics) error {
+	panic("unimplemented")
+}
+
 // Close implements storage.Storage.
 func (m *MetricsStorage) Close() error {
 	panic("unimplemented")

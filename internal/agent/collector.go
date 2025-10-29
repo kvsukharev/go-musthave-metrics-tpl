@@ -3,12 +3,16 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"runtime"
 	"sync"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/model"
 )
 
@@ -161,6 +165,27 @@ func (c *Collector) sendBatch() {
 	if resp.StatusCode == http.StatusOK {
 		c.buffer = c.buffer[:0]
 	}
+
+	sendBuffer := make([]model.Metrics, len(c.buffer))
+	copy(sendBuffer, c.buffer)
+
+	// Настройка стратегии повторов
+	retryBackoff := backoff.WithMaxRetries(
+		backoff.NewExponentialBackOff(
+			backoff.WithInitialInterval(1*time.Second),
+			backoff.WithMaxInterval(5*time.Second),
+		),
+		3,
+	)
+
+	operation := func() error {
+		return c.trySendBatch(sendBuffer)
+	}
+
+	// Выполнение с повторными попытками
+	if err := backoff.Retry(operation, retryBackoff); err == nil {
+		c.buffer = c.buffer[:0] // Очищаем только при успехе
+	}
 }
 
 func (c *Collector) StartFlusher(interval time.Duration) {
@@ -174,4 +199,40 @@ func (c *Collector) StartFlusher(interval time.Duration) {
 			c.mu.Unlock()
 		}
 	}()
+}
+
+func (c *Collector) trySendBatch(buffer []model.Metrics) error {
+	body, err := json.Marshal(buffer)
+	if err != nil {
+		return backoff.Permanent(err) // Неповторяемая ошибка
+	}
+
+	compressed := compress(body)
+	req, err := http.NewRequest("POST", c.endpoint+"/updates", bytes.NewReader(compressed))
+	if err != nil {
+		return backoff.Permanent(err)
+	}
+
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		// Повторяем для временных ошибок сети
+		if isRetriableError(err) {
+			return err
+		}
+		return backoff.Permanent(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("server error: %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func isRetriableError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
