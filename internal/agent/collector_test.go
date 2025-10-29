@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"net/http"
 	"sync"
 	"testing"
 )
@@ -22,7 +23,10 @@ func TestNewCollector(t *testing.T) {
 }
 
 func TestUpdateMetrics(t *testing.T) {
-	collector := NewCollector()
+	batchSize := 0
+	client := http.Client{}
+	endpoint := ""
+	collector := NewCollector(batchSize, client*http.Client, endpoint)
 
 	// Проверяем начальное состояние
 	gauge := collector.GetGauges()

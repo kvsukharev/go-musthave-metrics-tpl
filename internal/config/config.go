@@ -2,6 +2,7 @@ package config
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -11,9 +12,18 @@ import (
 )
 
 type ServerConfig struct {
+	Address       string        `env:"ADDRESS"`
+	StoreInterval time.Duration `env:"STORE_INTERVAL"`
+	FileStorage   string        `env:"FILE_STORAGE"`
+	Restore       bool          `env:"RESTORE"`
+	DatabaseDSN   string        `env:"DATABASE_DSN"`
+}
+
+type Config struct {
 	Address       string
+	DatabaseDSN   string
 	StoreInterval time.Duration
-	FileStorage   string
+	StoreFile     string
 	Restore       bool
 }
 
@@ -22,6 +32,7 @@ const (
 	defaultStoreInterval = 300 * time.Second
 	defaultFileStorage   = "metrics-db.json"
 	defaultRestore       = false
+	defaultDatabaseDSN   = "localhost"
 )
 
 func loadServerConfig() (*ServerConfig, error) {
@@ -30,6 +41,7 @@ func loadServerConfig() (*ServerConfig, error) {
 		StoreInterval: defaultStoreInterval,
 		FileStorage:   defaultFileStorage,
 		Restore:       defaultRestore,
+		DatabaseDSN:   defaultDatabaseDSN,
 	}
 
 	// Загрузка из env vars
@@ -79,4 +91,48 @@ func loadServerConfig() (*ServerConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func ParseFlags() (*ServerConfig, error) {
+	cfg := &ServerConfig{
+		Address: "localhost:8080",
+	}
+
+	flag.StringVar(&cfg.Address, "a", cfg.Address, "HTTP server endpoint address")
+	flag.StringVar(&cfg.DatabaseDSN, "d", "", "Database connection string")
+	flag.Parse()
+
+	if envDSN := os.Getenv("DATABASE_DSN"); envDSN != "" {
+		cfg.DatabaseDSN = envDSN
+	}
+
+	if flag.NArg() > 0 {
+		return nil, fmt.Errorf("unknown arguments: %v", flag.Args())
+	}
+
+	return cfg, nil
+}
+
+func MustLoad() *Config {
+	cfg := &Config{
+		Address:       "localhost:8080",
+		StoreInterval: 300 * time.Second,
+		StoreFile:     "/tmp/metrics-db.json",
+	}
+
+	flag.StringVar(&cfg.Address, "a", cfg.Address, "Server address")
+	flag.StringVar(&cfg.DatabaseDSN, "d", "", "PostgreSQL DSN")
+	flag.StringVar(&cfg.StoreFile, "f", cfg.StoreFile, "File storage path")
+	flag.BoolVar(&cfg.Restore, "r", true, "Restore metrics from file")
+	flag.Parse()
+
+	// Environment variables
+	if envDSN := os.Getenv("DATABASE_DSN"); envDSN != "" {
+		cfg.DatabaseDSN = envDSN
+	}
+	if envFile := os.Getenv("STORE_FILE"); envFile != "" {
+		cfg.StoreFile = envFile
+	}
+
+	return cfg
 }
