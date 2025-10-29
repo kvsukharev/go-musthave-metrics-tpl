@@ -2,14 +2,22 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/model"
 )
 
 type PostgresStorage struct {
 	pool *pgxpool.Pool
+}
+
+func (p *PostgresStorage) Ping(ctx context.Context) error {
+	panic("unimplemented")
 }
 
 func (p *PostgresStorage) Close() {
@@ -70,7 +78,55 @@ func (p *PostgresStorage) BatchUpdate(ctx context.Context, metrics []model.Metri
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("transaction commit error: %w", err)
 	}
+
+	maxRetries := 3
+	delays := []time.Duration{1, 3, 5}
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		err := p.batchUpdateTx(ctx, metrics)
+
+		if isRetriableDBError(err) && attempt < maxRetries {
+			time.Sleep(delays[attempt] * time.Second)
+			lastErr = err
+			continue
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed after %d attempts: %w", attempt+1, err)
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func (p *PostgresStorage) batchUpdateTx(ctx context.Context, metrics []model.Metrics) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Выполнение операций в транзакции
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func isRetriableDBError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case pgerrcode.ConnectionException,
+			pgerrcode.ConnectionDoesNotExist,
+			pgerrcode.ConnectionFailure,
+			pgerrcode.SQLClientUnableToEstablishSQLConnection:
+			return true
+		}
+	}
+	return false
 }
 
 // Пример реализации метода для счетчиков
