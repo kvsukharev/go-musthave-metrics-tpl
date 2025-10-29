@@ -23,6 +23,8 @@ type Config struct {
 	Address       string
 	DatabaseDSN   string
 	StoreInterval time.Duration
+	StoreFile     string
+	Restore       bool
 }
 
 const (
@@ -112,19 +114,25 @@ func ParseFlags() (*ServerConfig, error) {
 }
 
 func MustLoad() *Config {
-	var cfg Config
+	cfg := &Config{
+		Address:       "localhost:8080",
+		StoreInterval: 300 * time.Second,
+		StoreFile:     "/tmp/metrics-db.json",
+	}
 
-	flag.StringVar(&cfg.Address, "a", "localhost:8080", "Server address")
+	flag.StringVar(&cfg.Address, "a", cfg.Address, "Server address")
 	flag.StringVar(&cfg.DatabaseDSN, "d", "", "PostgreSQL DSN")
+	flag.StringVar(&cfg.StoreFile, "f", cfg.StoreFile, "File storage path")
+	flag.BoolVar(&cfg.Restore, "r", true, "Restore metrics from file")
 	flag.Parse()
 
-	// Переопределение переменными окружения
+	// Environment variables
 	if envDSN := os.Getenv("DATABASE_DSN"); envDSN != "" {
 		cfg.DatabaseDSN = envDSN
 	}
-	if envAddr := os.Getenv("ADDRESS"); envAddr != "" {
-		cfg.Address = envAddr
+	if envFile := os.Getenv("STORE_FILE"); envFile != "" {
+		cfg.StoreFile = envFile
 	}
 
-	return &cfg
+	return cfg
 }
