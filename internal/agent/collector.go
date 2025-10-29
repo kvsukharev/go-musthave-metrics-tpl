@@ -1,26 +1,44 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/json"
 	"math/rand"
+	"net/http"
 	"runtime"
 	"sync"
+	"time"
+
+	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/model"
 )
 
 type Collector struct {
-	mu      *sync.Mutex
-	gauge   map[string]float64
-	counter map[string]int64
+	mu        *sync.Mutex
+	gauge     map[string]float64
+	counter   map[string]int64
+	buffer    []model.Metrics
+	BatchSize int
+	client    *http.Client // Добавлено поле для HTTP-клиента
+	endpoint  string       // Добавлено поле для адреса сервера
 }
 
 func (c *Collector) UpdateMetrics() {
 	panic("unimplemented")
 }
 
-func NewCollector() *Collector {
+type AgentConfig struct {
+	BatchSize     int           `env:"BATCH_SIZE" default:"50"`
+	FlushInterval time.Duration `env:"FLUSH_INTERVAL" default:"5s"`
+}
+
+func NewCollector(batchSize int, client *http.Client, endpoint string) *Collector {
 	return &Collector{
-		mu:      &sync.Mutex{},
-		gauge:   make(map[string]float64),
-		counter: make(map[string]int64),
+		BatchSize: batchSize,
+		mu:        &sync.Mutex{},
+		gauge:     make(map[string]float64),
+		counter:   make(map[string]int64),
+		client:    client,   // Инициализация клиента
+		endpoint:  endpoint, // Инициализация адреса сервера
 	}
 }
 
@@ -96,4 +114,64 @@ func (c *Collector) GetMetricsCount() (int, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.gauge), len(c.counter)
+}
+
+func (c *Collector) AddMetric(m model.Metrics) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.buffer = append(c.buffer, m)
+	if len(c.buffer) >= c.BatchSize {
+		go c.sendBatch()
+	}
+}
+
+func (c *Collector) sendBatch() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(c.buffer) == 0 {
+		return
+	}
+
+	body, err := json.Marshal(c.buffer)
+	if err != nil {
+		// Добавить обработку ошибки
+		return
+	}
+
+	compressed := compress(body)
+
+	req, err := http.NewRequest("POST", c.endpoint+"/updates", bytes.NewReader(compressed))
+	if err != nil {
+		// Добавить обработку ошибки
+		return
+	}
+
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		// Добавить обработку ошибки
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		c.buffer = c.buffer[:0]
+	}
+}
+
+func (c *Collector) StartFlusher(interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		for range ticker.C {
+			c.mu.Lock()
+			if len(c.buffer) > 0 {
+				go c.sendBatch()
+			}
+			c.mu.Unlock()
+		}
+	}()
 }
