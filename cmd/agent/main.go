@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -69,7 +70,8 @@ func run() error {
 		Dur("Poll interval: %v", cfg.PollInterval).
 		Dur("Report interval: %v", cfg.ReportInterval)
 
-	collector := agent.NewCollector()
+	client := &http.Client{Timeout: 10 * time.Second}
+	collector := agent.NewCollector(100, client, "http://localhost:8080")
 
 	serverURL := cfg.server_address
 	if len(serverURL) < 7 || (serverURL[:7] != "http://" && serverURL[:8] != "https://") {

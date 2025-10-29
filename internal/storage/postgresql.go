@@ -3,9 +3,9 @@ package storage
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/model"
 )
 
 type PostgresStorage struct {
@@ -17,25 +17,60 @@ func (p *PostgresStorage) Close() {
 }
 
 func NewPostgresStorage(ctx context.Context, dsn string) (*PostgresStorage, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
-
-	cfg.MaxConns = 10
-	cfg.MinConns = 2
-	cfg.HealthCheckPeriod = time.Minute
-
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("create connection pool: %w", err)
-	}
-
 	return &PostgresStorage{pool: pool}, nil
 }
 
-func (p *PostgresStorage) Ping(ctx context.Context) error {
-	return p.pool.Ping(ctx)
+func (p *PostgresStorage) BatchUpdate(ctx context.Context, metrics []model.Metrics) error {
+	// Используем pool для начала транзакции
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("transaction begin error: %w", err)
+	}
+	defer tx.Rollback(ctx) // Добавляем контекст
+
+	const (
+		counterQuery = `INSERT INTO counters (name, value)
+                      VALUES ($1, $2)
+                      ON CONFLICT (name) DO UPDATE
+                      SET value = counters.value + EXCLUDED.value`
+
+		gaugeQuery = `INSERT INTO gauges (name, value)
+                    VALUES ($1, $2)
+                    ON CONFLICT (name) DO UPDATE
+                    SET value = EXCLUDED.value`
+	)
+
+	for _, m := range metrics {
+		switch m.MType {
+		case model.TypeCounter:
+			if m.Delta == nil {
+				continue // Пропускаем некорректные метрики
+			}
+			if _, err = tx.Exec(ctx, counterQuery, m.ID, *m.Delta); err != nil {
+				return fmt.Errorf("counter update failed: %w", err)
+			}
+
+		case model.TypeGauge:
+			if m.Value == nil {
+				continue // Пропускаем некорректные метрики
+			}
+			if _, err = tx.Exec(ctx, gaugeQuery, m.ID, *m.Value); err != nil {
+				return fmt.Errorf("gauge update failed: %w", err)
+			}
+
+		default:
+			return fmt.Errorf("unknown metric type: %s", m.MType)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("transaction commit error: %w", err)
+	}
+	return nil
 }
 
 // Пример реализации метода для счетчиков

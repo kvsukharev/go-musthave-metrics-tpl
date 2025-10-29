@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,7 @@ func NewHandlers(storage storage.Storage) *Handlers {
 func (h *Handlers) RegisterRoutes(r chi.Router) {
 	r.Post("/update", h.updateMetricJSONHandler)
 	r.Post("/value", h.valueMetricJSONHandler)
+	r.Post("/updates", h.BatchUpdateMetrics)
 	r.Post("/update/*", h.updateHandler)
 	r.Post("/update/{type}/{name}/{value}", h.updateHandlerChi)
 	r.Get("/value/{type}/{name}", h.valueHandler)
@@ -131,6 +133,44 @@ func (h *Handlers) valueMetricJSONHandler(w http.ResponseWriter, r *http.Request
 	default:
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)
 	}
+}
+
+func decodeBody(r *http.Request, v interface{}) error {
+	// Обработка gzip
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return err
+		}
+		defer gz.Close()
+		return json.NewDecoder(gz).Decode(v)
+	}
+	return json.NewDecoder(r.Body).Decode(v)
+
+}
+
+func (h *Handlers) BatchUpdateMetrics(w http.ResponseWriter, r *http.Request) {
+	var metrics []model.Metrics
+
+	// Декодируем тело запроса
+	if err := decodeBody(r, &metrics); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Проверяем наличие метрик
+	if len(metrics) == 0 {
+		http.Error(w, "empty metrics batch", http.StatusBadRequest)
+		return
+	}
+
+	// Выполняем пакетное обновление
+	if err := h.storage.BatchUpdate(r.Context(), metrics); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handlers) updateMetricJSONHandler(w http.ResponseWriter, r *http.Request) {

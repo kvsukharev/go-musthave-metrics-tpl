@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/model"
 )
 
 var (
@@ -14,6 +16,7 @@ var (
 type Storage interface {
 	UpdateGauge(name string, value float64)
 	UpdateCounter(name string, value int64)
+	BatchUpdate(ctx context.Context, metrics []model.Metrics) error
 	GetGauge(name string) (float64, error)
 	GetCounter(name string) (int64, error)
 	GetAllMetrics() (map[string]float64, map[string]int64)
