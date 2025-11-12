@@ -1,16 +1,20 @@
 package handlers
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
 	"sync"
 
+	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/agent"
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/model"
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/storage"
 
@@ -376,4 +380,43 @@ func (h *Handlers) rootHandler(w http.ResponseWriter, r *http.Request) {
 	if err := t.Execute(w, data); err != nil {
 		log.Printf("Template execution error: %v", err)
 	}
+}
+
+func NewSHA256CheckMiddleware(key string) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if key == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			bodyBytes, err := ioutil.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "cannot read body", http.StatusBadRequest)
+				return
+			}
+			r.Body.Close()
+
+			gotHash := r.Header.Get("HashSHA256")
+			expectedHash := agent.ComputeHMAC(bodyBytes, key)
+
+			if !hmac.Equal([]byte(expectedHash), []byte(gotHash)) {
+				http.Error(w, "invalid hash", http.StatusBadRequest)
+				return
+			}
+
+			// Вернуть тело для следующего обработчика
+			r.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func writeSignedResponse(w http.ResponseWriter, body []byte, key string) {
+	if key != "" {
+		w.Header().Set("HashSHA256", agent.ComputeHMAC(body, key))
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(body)
 }

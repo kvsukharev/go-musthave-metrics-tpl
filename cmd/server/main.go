@@ -103,6 +103,11 @@ func main() {
 
 	// Инициализация хранилища
 	var dbStorage *storage.PostgresStorage
+
+	if cfg.Key != "" {
+		r.Use(handlers.NewSHA256CheckMiddleware(cfg.Key))
+	}
+
 	if cfg.DatabaseDSN != "" {
 		dbStorage, err = storage.NewPostgresStorage(context.Background(), cfg.DatabaseDSN)
 		if err != nil {

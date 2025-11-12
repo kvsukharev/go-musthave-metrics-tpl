@@ -12,6 +12,7 @@ import (
 )
 
 type ServerConfig struct {
+	Key           string        `env:"KEY"`
 	Address       string        `env:"ADDRESS"`
 	StoreInterval time.Duration `env:"STORE_INTERVAL"`
 	FileStorage   string        `env:"FILE_STORAGE"`
@@ -20,6 +21,7 @@ type ServerConfig struct {
 }
 
 type Config struct {
+	Key           string
 	Address       string
 	DatabaseDSN   string
 	StoreInterval time.Duration
@@ -56,6 +58,7 @@ func loadServerConfig() (*ServerConfig, error) {
 		flagRestore  bool
 	)
 
+	flag.StringVar(&cfg.Key, "k", os.Getenv("KEY"), "Secret key for HMAC")
 	flag.StringVar(&flagAddress, "a", "", "Server address")
 	flag.IntVar(&flagInterval, "i", -1, "Store interval in seconds (0 = sync write)")
 	flag.StringVar(&flagFile, "f", "", "File path for storage")
@@ -98,6 +101,7 @@ func ParseFlags() (*ServerConfig, error) {
 		Address: "localhost:8080",
 	}
 
+	flag.StringVar(&cfg.Key, "k", os.Getenv("KEY"), "Secret key for HMAC")
 	flag.StringVar(&cfg.Address, "a", cfg.Address, "HTTP server endpoint address")
 	flag.StringVar(&cfg.DatabaseDSN, "d", "", "Database connection string")
 	flag.Parse()
@@ -120,6 +124,7 @@ func MustLoad() *Config {
 		StoreFile:     "/tmp/metrics-db.json",
 	}
 
+	flag.StringVar(&cfg.Key, "k", os.Getenv("KEY"), "Secret key for HMAC")
 	flag.StringVar(&cfg.Address, "a", cfg.Address, "Server address")
 	flag.StringVar(&cfg.DatabaseDSN, "d", "", "PostgreSQL DSN")
 	flag.StringVar(&cfg.StoreFile, "f", cfg.StoreFile, "File storage path")

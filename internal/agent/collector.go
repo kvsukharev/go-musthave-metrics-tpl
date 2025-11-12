@@ -144,7 +144,7 @@ func (c *Collector) sendBatch() {
 		return
 	}
 
-	compressed := compress(body)
+	compressed := Compress(body)
 
 	req, err := http.NewRequest("POST", c.endpoint+"/updates", bytes.NewReader(compressed))
 	if err != nil {
@@ -207,7 +207,7 @@ func (c *Collector) trySendBatch(buffer []model.Metrics) error {
 		return backoff.Permanent(err) // Неповторяемая ошибка
 	}
 
-	compressed := compress(body)
+	compressed := Compress(body)
 	req, err := http.NewRequest("POST", c.endpoint+"/updates", bytes.NewReader(compressed))
 	if err != nil {
 		return backoff.Permanent(err)
