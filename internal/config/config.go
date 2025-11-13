@@ -18,6 +18,7 @@ type ServerConfig struct {
 	FileStorage   string        `env:"FILE_STORAGE"`
 	Restore       bool          `env:"RESTORE"`
 	DatabaseDSN   string        `env:"DATABASE_DSN"`
+	RateLimit     int           `env:"RATE_LIMIT"`
 }
 
 type Config struct {
@@ -27,6 +28,7 @@ type Config struct {
 	StoreInterval time.Duration
 	StoreFile     string
 	Restore       bool
+	RateLimit     int
 }
 
 const (
@@ -98,9 +100,11 @@ func loadServerConfig() (*ServerConfig, error) {
 
 func ParseFlags() (*ServerConfig, error) {
 	cfg := &ServerConfig{
-		Address: "localhost:8080",
+		Address:   "localhost:8080",
+		RateLimit: 5,
 	}
 
+	flag.IntVar(&cfg.RateLimit, "RATE_LIMIT", 5, "Max concurrent requests")
 	flag.StringVar(&cfg.Key, "k", os.Getenv("KEY"), "Secret key for HMAC")
 	flag.StringVar(&cfg.Address, "a", cfg.Address, "HTTP server endpoint address")
 	flag.StringVar(&cfg.DatabaseDSN, "d", "", "Database connection string")

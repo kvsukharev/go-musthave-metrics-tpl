@@ -142,3 +142,33 @@ o	service — поддиректория с файлом put.go, который,
 •	наличие директории api с файлами protobuf позволяет легко описывать и генерировать код для взаимодействия с API;
 •	директория migrations упрощает управление изменениями схемы базы данных.
 В целом, подобная организация проекта делает код более модульным, читаемым и удобным для командной разработки.
+
+
+api/
+cmd/agent/main.go
+cmd/server/main.go
+cmd/server/main_test.go
+internal/agent/agent.go
+internal/agent/collector.go
+internal/agent/collector_test.go
+internal/agent/sender.go
+internal/agent/sender_test.go
+internal/agent/util.go
+internal/config/config.go
+internal/handler/handlers.go
+internal/logger/logger.go
+internal/logger/logging.go
+internal/middleware_proj/gzip.go
+internal/model/metrics.go
+internal/repository
+internal/server/server.go
+internal/service
+internal/storage/postgresql.go
+internal/storage/storage.go
+logs/
+migrations/001_init.down.sql
+migrations/001_init.up.sql
+pkg/README.md
+go.mod
+go.sum
+README.md  а для этой схемы
