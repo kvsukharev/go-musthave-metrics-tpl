@@ -97,10 +97,6 @@ func main() {
 	// Регистрация маршрутов
 	h.RegisterRoutes(r)
 
-	// Запуск сервера
-	log.Println("Server starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", r))
-
 	// Инициализация хранилища
 	var dbStorage *storage.PostgresStorage
 

@@ -121,7 +121,7 @@ func ParseFlags() (*ServerConfig, error) {
 	return cfg, nil
 }
 
-func MustLoad() *Config {
+func FlagsLoad() *Config {
 	cfg := &Config{
 		Address:       "localhost:8080",
 		StoreInterval: 300 * time.Second,

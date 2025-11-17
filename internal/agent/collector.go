@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -140,7 +141,7 @@ func (c *Collector) sendBatch() {
 
 	body, err := json.Marshal(c.buffer)
 	if err != nil {
-		// Добавить обработку ошибки
+		log.Printf("Failed to marshal batch: %v", err)
 		return
 	}
 
@@ -148,7 +149,7 @@ func (c *Collector) sendBatch() {
 
 	req, err := http.NewRequest("POST", c.endpoint+"/updates", bytes.NewReader(compressed))
 	if err != nil {
-		// Добавить обработку ошибки
+		log.Printf("Failed to create HTTP request: %v", err)
 		return
 	}
 
@@ -157,7 +158,7 @@ func (c *Collector) sendBatch() {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		// Добавить обработку ошибки
+		log.Printf("Failed to send HTTP request: %v", err)
 		return
 	}
 	defer resp.Body.Close()

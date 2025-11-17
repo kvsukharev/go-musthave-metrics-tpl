@@ -17,6 +17,10 @@ type HTTPClient struct {
 	client *http.Client
 }
 
+func (c *HTTPClient) SendBatch(metricsBatch []model.Metrics) any {
+	panic("unimplemented")
+}
+
 func NewHTTPClient(cfg *config.Config) *HTTPClient {
 	return &HTTPClient{
 		cfg:    cfg,
