@@ -4,9 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -17,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/agent"
+	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/config"
 	"github.com/kvsukharev/go-musthave-metrics-tpl/internal/logger"
 
 	"github.com/go-chi/chi/v5"
@@ -29,9 +28,9 @@ type RootConfig struct {
 
 // AgentConfig с тегами yaml и env
 type AgentConfig struct {
-	server_address string        `yaml:"server_adress" env:"ADDRESS"` // Обращаем внимание: env тег использует точное имя переменной
-	PollInterval   time.Duration `yaml:"poll_interval"`               // интервал в time.Duration, парсим отдельно
-	ReportInterval time.Duration `yaml:"report_interval"`             // как выше
+	ServerAddress  string        `yaml:"server_address" env:"ADDRESS"` // Обращаем внимание: env тег использует точное имя переменной
+	PollInterval   time.Duration `yaml:"poll_interval"`                // интервал в time.Duration, парсим отдельно
+	ReportInterval time.Duration `yaml:"report_interval"`              // как выше
 }
 
 const (
@@ -65,20 +64,19 @@ func run() error {
 	}
 
 	log.Info().
-		Str("Starting metrics agent with config:", "").
-		Str("Server address: %s", cfg.server_address).
+		Str("Server address: %s", cfg.ServerAddress).
 		Dur("Poll interval: %v", cfg.PollInterval).
 		Dur("Report interval: %v", cfg.ReportInterval)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	collector := agent.NewCollector(100, client, "http://localhost:8080")
+	collector := agent.NewCollector()
 
-	serverURL := cfg.server_address
-	if len(serverURL) < 7 || (serverURL[:7] != "http://" && serverURL[:8] != "https://") {
-		serverURL = "http://" + serverURL
+	// Создаем конфиг для сервера
+	serverCfg := &config.ServerConfig{
+		Address: cfg.ServerAddress,
 	}
 
-	sender := agent.NewSender(serverURL)
+	// Создаем HTTP клиент для отправки метрик
+	httpClient := agent.NewHTTPClient(serverCfg)
 
 	// Router и middleware с логированием
 	r := chi.NewRouter()
@@ -122,14 +120,8 @@ func run() error {
 				log.Info().Msg("Stopping metrics reporting...")
 				return
 			case <-ticker.C:
-				gauges := collector.GetGauges()
-				counters := collector.GetCounters()
-				if len(gauges) == 0 && len(counters) == 0 {
-					log.Info().Msg("No metrics to send")
-					continue
-				}
-				log.Info().Str("Sending metrics to %s", serverURL)
-				if err := sender.SendAllMetrics(gauges, counters); err != nil {
+				// Используем метод SendMetrics из коллектора, который будет использовать HTTP клиент
+				if err := collector.SendMetrics(httpClient, cfg.ServerAddress); err != nil {
 					log.Info().Msgf("Failed to send metrics: %v", err)
 				} else {
 					log.Info().Msg("Successfully sent all metrics")
@@ -165,13 +157,13 @@ func run() error {
 func loadConfig(path string) (*AgentConfig, error) {
 	rootCfg := &RootConfig{
 		AgentConfig: AgentConfig{
-			server_address: defaultServerAddress,
+			ServerAddress:  defaultServerAddress,
 			PollInterval:   defaultPollInterval,
 			ReportInterval: defaultReportInterval,
 		},
 	}
 
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		log.Printf("Config file %q not found, using defaults and env variables", path)
 	} else {
@@ -187,7 +179,7 @@ func loadConfig(path string) (*AgentConfig, error) {
 func applyEnv(cfg *AgentConfig) error {
 	// Переменная окружения ADDRESS
 	if addr := os.Getenv("ADDRESS"); addr != "" {
-		cfg.server_address = addr
+		cfg.ServerAddress = addr
 	}
 
 	// Переменные интервалов интервалов в секундах — парсим из строк
@@ -226,7 +218,7 @@ func parseFlags(cfg *AgentConfig) error {
 
 	// Применяем флаги, если переменные окружения не заданы
 	if os.Getenv("ADDRESS") == "" && flagAddress != "" {
-		cfg.server_address = flagAddress
+		cfg.ServerAddress = flagAddress
 	}
 
 	if os.Getenv("POLL_INTERVAL") == "" && flagPollInterval > 0 {
